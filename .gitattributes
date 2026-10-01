@@ -1,2 +1,12 @@
-# Auto detect text files and perform LF normalization
-* text=auto
+# Store every file exactly as it is on disk (no line ending changes)
+* -text
+
+# Except .bat files: always Windows line endings so cmd runs them right
+*.bat text eol=crlf
+
+# Keep these out of the "Source code" downloads on the Releases page,
+# so that zip only has what is needed to build (.py, .bat, icon, README)
+/.github         export-ignore
+/.gitattributes  export-ignore
+/.gitignore      export-ignore
+/screenshots     export-ignore

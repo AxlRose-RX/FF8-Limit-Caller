@@ -1,0 +1,122 @@
+name: FF8 Limit Caller
+
+run-name: "Build (manual)"
+
+# Never builds on push. Actions tab -> FF8 Limit Caller -> Run workflow.
+on:
+  workflow_dispatch:
+    inputs:
+      notes:
+        description: "Release notes for this version (optional, you can also edit the release page later)"
+        type: string
+        required: false
+        default: ""
+      publish:
+        description: "Publish a GitHub Release (off: test build only, download it from the run page)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+env:
+  _RELEASE_NAME: "FF8 Limit Caller"
+  _APP: "ff8_limit_caller"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+
+      - name: Read version from ff8_limit_caller.py
+        shell: pwsh
+        env:
+          PUBLISH: ${{ inputs.publish }}
+        run: |
+          $py = Get-Content -Raw ".\$env:_APP.py"
+          $m = [regex]::Match($py, '(?m)^APP_VERSION\s*=\s*"([^"]*)"')
+          if (-not $m.Success) { throw "APP_VERSION is missing from $env:_APP.py" }
+
+          $version = $m.Groups[1].Value.Trim()
+          if ($version -notmatch '^\d{4}\.\d{4}$') {
+            throw "APP_VERSION is '$version' but must be a date in YYYY.MMDD form, for example 2026.0927"
+          }
+          $tag = "v$version"
+
+          # Stop before building if this version was already released
+          if ($env:PUBLISH -eq 'true') {
+            git ls-remote --exit-code --tags origin "refs/tags/$tag" | Out-Null
+            if ($LASTEXITCODE -eq 0) {
+              throw "$tag is already released. Change APP_VERSION in $env:_APP.py, or delete that release and its tag on GitHub first."
+            }
+          }
+          $global:LASTEXITCODE = 0
+
+          Write-Output "--------------------------------------------------"
+          Write-Output "APP VERSION     : $version"
+          Write-Output "RELEASE VERSION : $tag"
+          Write-Output "--------------------------------------------------"
+          Add-Content -Path $env:GITHUB_ENV -Value "_RELEASE_VERSION=$tag"
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      # Same packages and PyInstaller options as build_exeonedir.bat.
+      # If you change the .bat, change them here too.
+      - name: Build
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+
+          python -m pip install --upgrade pip pyinstaller pymem
+
+          python -m PyInstaller --noconfirm --clean --onedir --icon=icon.ico --name $env:_APP `
+            --collect-all pymem `
+            --hidden-import tkinter `
+            --exclude-module pytest `
+            --windowed `
+            ".\$env:_APP.py"
+
+          # icon.ico in _internal is what the app loads for its window icon
+          Copy-Item -Path ".\icon.ico" -Destination ".\dist\$env:_APP\_internal\" -Force
+
+          # Same zip as the .bat: the .exe and the _internal folder at the top
+          Compress-Archive -Path ".\dist\$env:_APP\*" -DestinationPath ".\dist\$env:_APP.zip" -CompressionLevel Optimal
+          Get-Item ".\dist\$env:_APP.zip" | Format-List Name, Length
+
+      - name: Write release notes
+        if: ${{ inputs.publish }}
+        shell: pwsh
+        env:
+          NOTES: ${{ inputs.notes }}
+        run: |
+          $lines = @("**$env:_RELEASE_NAME** $env:_RELEASE_VERSION", "")
+          if (-not [string]::IsNullOrWhiteSpace($env:NOTES)) { $lines += @($env:NOTES.Trim(), "") }
+          $lines += ('Unzip `{0}.zip` anywhere and run `{0}.exe` (keep the `_internal` folder next to it). How to use it is in the [README](https://github.com/{1}#how-to-use).' -f $env:_APP, $env:GITHUB_REPOSITORY)
+          Set-Content -Path ".\dist\release-notes.md" -Value ($lines -join "`n") -Encoding utf8NoBOM
+          Get-Content ".\dist\release-notes.md"
+
+      - name: Publish release
+        if: ${{ inputs.publish }}
+        uses: ncipollo/release-action@v1
+        with:
+          artifacts: "dist/${{ env._APP }}.zip"
+          tag: "${{ env._RELEASE_VERSION }}"
+          commit: "${{ github.sha }}"
+          name: "${{ env._RELEASE_NAME }} ${{ env._RELEASE_VERSION }}"
+          bodyFile: "dist/release-notes.md"
+          makeLatest: true
+
+      - name: Upload test build
+        if: ${{ !inputs.publish }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: "${{ env._APP }}_${{ env._RELEASE_VERSION }}_test"
+          path: "dist/${{ env._APP }}/"

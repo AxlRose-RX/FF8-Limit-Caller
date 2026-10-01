@@ -1,0 +1,10 @@
+# Build output from build_exeonedir.bat / PyInstaller
+build/
+dist/
+__pycache__/
+*.spec
+*.pyc
+
+# Windows folder junk
+Thumbs.db
+desktop.ini
